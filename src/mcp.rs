@@ -18,6 +18,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt, tool, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::agents;
 use crate::pipeline::Config;
 use crate::reports::{Brief, Review};
 use crate::store::{self, Kind};
@@ -57,6 +58,23 @@ pub struct Report {
 pub struct AskArgs {
     /// The question for the chief of staff.
     question: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SpinOffArgs {
+    /// "brief" (a must-do) or "review" (a bet), from the latest saved run.
+    from: agents::From,
+    /// The item's number, as the report numbers it.
+    item: usize,
+    /// "claude" (default) or "codex".
+    #[serde(default)]
+    harness: Option<agents::Harness>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct AgentId {
+    /// An agent id from `agents`.
+    id: String,
 }
 
 fn ui_meta() -> MetaObject {
@@ -145,6 +163,88 @@ impl Cos {
                 "{}\n\n(cost ${:.2})",
                 done.markdown, done.cost_usd
             ))]),
+            Ok(Err(e)) => failed(e),
+            Err(e) => failed(e),
+        }
+    }
+
+    /// Spun-off coding agents: status, tool calls, cost, latest activity,
+    /// workdir. Free; local only.
+    #[tool(annotations(read_only_hint = true, open_world_hint = false))]
+    async fn agents(&self) -> CallToolResult {
+        match agents::list(&self.cfg.home) {
+            Ok(list) => {
+                let rows: Vec<Value> = list
+                    .iter()
+                    .map(|(spec, st)| {
+                        json!({ "id": spec.id, "title": spec.title, "source": spec.source,
+                        "harness": spec.harness, "workdir": spec.workdir, "state": st })
+                    })
+                    .collect();
+                CallToolResult::structured(json!({ "agents": rows }))
+            }
+            Err(e) => failed(e),
+        }
+    }
+
+    /// Start a coding agent (Claude Code or Codex) on one item's agent prompt,
+    /// in a detached worktree of the repo it names. Returns at once; the agent
+    /// runs in the background, sandboxed, and stops before anything
+    /// outward-facing. Costs money (capped per agent). Local only.
+    #[tool(annotations(read_only_hint = false, open_world_hint = true))]
+    async fn spin_off(&self, Parameters(args): Parameters<SpinOffArgs>) -> CallToolResult {
+        let home = self.cfg.home.clone();
+        let projects = self.cfg.projects.clone();
+        let budget = self.cfg.budget.unwrap_or(5.0);
+        let run = move || -> Result<agents::Spec> {
+            let task = agents::tasks(&home, args.from)?
+                .into_iter()
+                .find(|t| t.n == args.item)
+                .ok_or_else(|| anyhow::anyhow!("item {} has no agent prompt", args.item))?;
+            let cos = std::env::current_exe()?;
+            agents::spawn(
+                &home,
+                agents::Request {
+                    harness: args.harness.unwrap_or(agents::Harness::Claude),
+                    program: None,
+                    model: None,
+                    repo: agents::infer_repo(&task.prompt, &projects),
+                    worktree: true,
+                    title: task.title,
+                    source: task.source,
+                    prompt: task.prompt,
+                    deadline: std::time::Duration::from_secs(1800),
+                    budget_usd: budget,
+                },
+                &cos,
+            )
+        };
+        match tokio::task::spawn_blocking(run).await {
+            Ok(Ok(spec)) => CallToolResult::success(vec![ContentBlock::text(format!(
+                "started {} in {} — follow with the agents tool or `cos agents tail -f {}`",
+                spec.id,
+                spec.workdir.display(),
+                spec.id
+            ))]),
+            Ok(Err(e)) => failed(e),
+            Err(e) => failed(e),
+        }
+    }
+
+    /// Stop a running agent and everything it started. Local only.
+    #[tool(annotations(
+        read_only_hint = false,
+        destructive_hint = true,
+        open_world_hint = false
+    ))]
+    async fn stop_agent(&self, Parameters(args): Parameters<AgentId>) -> CallToolResult {
+        let home = self.cfg.home.clone();
+        match tokio::task::spawn_blocking(move || {
+            agents::stop(&home, &args.id, std::time::Duration::from_secs(10))
+        })
+        .await
+        {
+            Ok(Ok(st)) => CallToolResult::success(vec![ContentBlock::text(st.status.to_string())]),
             Ok(Err(e)) => failed(e),
             Err(e) => failed(e),
         }

@@ -22,6 +22,8 @@ pub struct Run<'a> {
     pub max_budget_usd: f64,
     pub tools: Toolset<'a>,
     pub deadline: Duration,
+    /// MCP server prefixes denied outright (`context/deny-mcp.txt`).
+    pub denied: Vec<String>,
 }
 
 pub enum Toolset<'a> {
@@ -31,14 +33,9 @@ pub enum Toolset<'a> {
     None,
 }
 
-/// Built-in tools a brain may use. `cos` runs `cn` and `gh` itself, so no Bash.
-const TOOLS: &str = "Read,Glob,Grep,ToolSearch";
-
-/// Connector servers the brains never need. Denying them keeps their tool
-/// definitions out of the context the run pays to cache.
-const DENIED: &str = "mcp__claude_ai_Shutterstock,mcp__claude_ai_Looker,\
-mcp__claude_ai_Microsoft_Learn,mcp__claude_ai_Google_Sheets,mcp__claude_ai_Google_Slides,\
-mcp__claude_ai_Claude_Docs,mcp__prime";
+/// The only built-in tool a brain gets. `cos` runs `cn` and `gh` and inlines
+/// `context/` itself, so a brain needs no Bash and no file reads.
+pub const BRAIN_TOOLS: &str = "ToolSearch";
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -104,9 +101,9 @@ pub struct Outcome {
     pub permission_denials: Vec<Value>,
 }
 
-/// Runs `run` with `home` as cwd so the repo's CLAUDE.md and `.claude/agents`
-/// load, and appends every tool call to `audit`.
-pub fn execute(home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
+/// The `claude` invocation for `run`, with `home` as cwd so the repo's
+/// CLAUDE.md and `.claude/agents` load.
+pub fn command(home: &Path, run: &Run) -> Command {
     let mut cmd = Command::new("claude");
     cmd.current_dir(home)
         .args(["-p", &run.prompt])
@@ -119,9 +116,12 @@ pub fn execute(home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
         .arg("--no-session-persistence");
     match run.tools {
         Toolset::Brain(allowed) => {
-            cmd.args(["--tools", TOOLS, "--disallowedTools", DENIED])
+            cmd.args(["--tools", BRAIN_TOOLS])
                 .arg("--allowedTools")
                 .arg(allowed.join(","));
+            if !run.denied.is_empty() {
+                cmd.arg("--disallowedTools").arg(run.denied.join(","));
+            }
         }
         // An empty --tools also drops ToolSearch, which makes every MCP tool
         // load eagerly; --strict-mcp-config with no config removes them instead.
@@ -132,7 +132,12 @@ pub fn execute(home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
     if let Some(schema) = &run.json_schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
+    cmd
+}
 
+/// Runs `run` and appends every tool call to `audit`.
+pub fn execute(home: &Path, audit: &Path, run: &Run) -> Result<Outcome> {
+    let mut cmd = command(home, run);
     let mut log = AuditLog::open(audit, run.agent)?;
     let mut outcome = None;
     let (status, stderr) = proc::stream_lines(&mut cmd, run.deadline, |line| {

@@ -66,8 +66,9 @@ task schedule               # weekdays 08:30 brief, Fridays 16:00 review
 | | |
 |---|---|
 | **Reads** | Calendar, Gmail, Jira/Confluence, Notion through your claude.ai connectors; open, review-requested and merged PRs (`gh`); ready tasks (`cn`) |
-| **Writes** | `out/` only: briefs, reviews, facts, the history ledger, dated HTML reports. Nothing is sent, merged, commented or edited — tools outside an explicit allowlist are denied |
+| **Writes** | `out/` only: briefs, reviews, facts, the history ledger, dated HTML reports. Nothing is sent, merged, commented or edited — tools outside an explicit allowlist are denied, and the brains get no file tools (`context/` is inlined) |
 | **Prompts** | each must-do and each bet ships a self-contained prompt for Claude Code or Codex that stops before anything outward-facing |
+| **Agents** | `cos agents spawn --from brief --item 2` runs that prompt: Claude Code or Codex in its own worktree, sandboxed with no network, under a supervisor with a deadline and a spend cap; `cos agents watch` / `tail -f` / `kill` |
 | **Charts** | numbers from the facts `cos` collects, never from the model; hand-built SVG with a validated palette, light and dark |
 | **Diagrams** | roadmap, goals flywheel and architecture via [Markdy](https://markdy.com) 1.5.7, vendored inline, generated from data |
 | **Archives** | one row per day plus every merged PR, seeded with the last year; `cos dash` serves it live |
@@ -77,9 +78,9 @@ task schedule               # weekdays 08:30 brief, Fridays 16:00 review
 
 | | |
 |---|---|
-| **Terminal** | `cos brief` · `cos review` · `cos ask "release review or bug fix today?"` · `cos report` |
-| **Browser, live** | `cos dash` → `127.0.0.1:8790`, reloads after every run; localhost only |
-| **Claude Desktop · Codex** | `task install-mcp` registers `cos mcp`: `latest_brief` / `latest_review` (free), `brief` / `review` / `ask` (paid) |
+| **Terminal** | `cos brief` · `cos review` · `cos ask "release review or bug fix today?"` · `cos report` · `cos agents …` |
+| **Browser, live** | `cos dash` → `127.0.0.1:8790`, reloads after every run; `/agents` for running agents; localhost only |
+| **Claude Desktop · Codex** | `task install-mcp` registers `cos mcp`: `latest_brief` / `latest_review` / `agents` (free), `brief` / `review` / `ask` / `spin_off` (paid), `stop_agent` |
 | **claude.ai** | `cos tunnel`: a Cloudflare quick tunnel to a read-only server that can't start paid runs |
 | **Claude Code** | the three agents are installed into `~/.claude/agents/` |
 

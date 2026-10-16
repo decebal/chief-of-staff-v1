@@ -30,7 +30,9 @@ commit anything from `context/` or `out/`.
 | Path | What |
 |---|---|
 | `src/claude.rs` | stream-json driver, audit log |
+| `src/context.rs` | `context/` inlined into prompts (brains have no file tools); `deny-mcp.txt` |
 | `src/proc.rs` | bounded child processes: one deadline, kill the group, reap |
+| `src/agents/` | `cos agents`: spawn, supervise, monitor and stop Claude Code / Codex agents in worktrees |
 | `src/gather.rs` | `cn` / `gh` facts collected without the model |
 | `src/pipeline.rs` | brief, review, ask — shared by CLI and MCP |
 | `src/reports.rs` | typed outputs + their JSON Schemas |
@@ -55,3 +57,11 @@ cos --dry-run brief     # print the prompt, call nothing
 ```
 
 Agent files carry `@COS_HOME@`; `task install` substitutes the clone path.
+
+## Review
+
+`/prove-it` (`.claude/skills/prove-it/`) asks whether a change does what it
+claims in this repo: the brains stay read-only, every child is owned and
+reaped, every number comes from facts. Copilot code review reads the same
+invariants from `.github/skills/prove-it-review/` and
+`.github/instructions/review.instructions.md`.

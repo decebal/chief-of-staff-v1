@@ -109,6 +109,42 @@ the default 60 s tool timeout; add `tool_timeout_sec = 320` under
 In Claude Code, `task setup` also installs the three agents into
 `~/.claude/agents/`, so any session can delegate to `tactician` or `strategist`.
 
+### Spin off agents
+
+Every must-do and every bet carries an agent prompt. `cos agents` runs them:
+
+```bash
+cos agents spawn --from brief                 # list the items that have a prompt
+cos agents spawn --from brief --item 2        # Claude Code on must-do #2
+cos agents spawn --from review --item 1 --harness codex
+cos agents spawn --from brief --all           # one agent per must-do
+cos agents spawn --prompt "…" --repo ~/Projects/my-repo
+cos agents watch                              # the table, redrawn until all finish
+cos agents tail -f <id>                       # one line per tool call or message
+cos agents show <id>                          # summary, cost, how to take it over
+cos agents kill <id>
+cos agents clean                              # remove finished worktrees (keeps any holding work)
+```
+
+- **Where it works**: a detached worktree under `out/agents/<id>/tree`, cut
+  from the HEAD of the repo the prompt names (`~/Projects/<repo>`), or
+  `--repo`. `--in-place` uses the checkout itself. Without a repo it gets a
+  scratch directory.
+- **What it may do**: edit and run commands inside that worktree. Shell
+  commands have no network (Claude Code's sandbox with a strict allowlist;
+  Codex's `workspace-write`), so it cannot push, comment or send; it stops
+  and leaves the draft for you, as every agent prompt asks.
+- **Limits**: `--deadline` seconds (default 1800, ceiling 7200) and
+  `--budget` dollars for Claude (default $5). Codex has no spend flag.
+- **Take over**: `cos agents show <id>` prints `claude --resume <session>` or
+  `codex resume <session>` for the worktree.
+- **From Claude Desktop or Codex**: the `spin_off`, `agents` and `stop_agent`
+  tools (local server only; the remote one never offers them).
+- **In the browser**: `cos dash`, then `/agents`.
+
+`cos agents clean` refuses a worktree with uncommitted changes or new commits;
+copy or commit the work first, or pass `--force`.
+
 ### Remote, for claude.ai (Claude Dashboards)
 
 ```bash
@@ -137,7 +173,11 @@ choosing.
 ## Customise
 
 - **What the brains may touch**: `READ_ONLY` in `src/lib.rs`. Anything not
-  listed is denied. Add individual tools, never a whole server.
+  listed is denied. Add individual tools, never a whole server, and never a
+  file tool: `context/` reaches the brains inlined in the prompt.
+- **Cheaper runs**: list connectors the brains never use in
+  `context/deny-mcp.txt`; their tool definitions then stay out of every run's
+  cached context.
 - **Prompts**: `.claude/agents/*.md`. Re-run `task install` after editing.
 - **Models and budgets**: `src/pipeline.rs` (`brain(...)` calls, defaults
   `--budget`).
