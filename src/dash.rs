@@ -56,6 +56,14 @@ fn route(home: &Path, allowed: &[String], req: Request<Incoming>) -> Response<Fu
             Err(e) => text(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
         },
         "/version" => text(StatusCode::OK, &version(home)),
+        "/agents" => match crate::agents::list(home) {
+            Ok(list) => respond(
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                crate::agents::view::html(&list).into(),
+            ),
+            Err(e) => text(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
+        },
         _ => match archived(home, path) {
             Some(file) => match std::fs::read(file) {
                 Ok(b) => respond(StatusCode::OK, "text/html; charset=utf-8", b.into()),

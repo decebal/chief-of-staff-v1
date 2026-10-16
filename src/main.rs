@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use cos::agents::{self, Harness};
 use cos::claude::Run;
 use cos::mcp::{self, Mode};
 use cos::pipeline::Config;
@@ -64,6 +66,68 @@ enum Cmd {
         #[arg(long, default_value_t = 8787)]
         port: u16,
     },
+    /// Spin off coding agents on a brief's or review's prompts, and watch them.
+    Agents {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// Start an agent in the background; prints its id. `--budget` caps a
+    /// Claude agent's spend (default $5; Codex has no budget flag).
+    Spawn {
+        /// Take the prompt from the latest saved brief (must-dos) or review (bets).
+        #[arg(long, value_enum, conflicts_with = "prompt")]
+        from: Option<agents::From>,
+        /// Which item, numbered as the report numbers it.
+        #[arg(long, requires = "from")]
+        item: Option<usize>,
+        /// Every item with a prompt, one agent each.
+        #[arg(long, requires = "from", conflicts_with = "item")]
+        all: bool,
+        /// A prompt of your own instead.
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long, value_enum, default_value_t = Harness::Claude)]
+        harness: Harness,
+        /// Repo to work in; default: the first ~/Projects/<repo> the prompt names.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Work in the repo's own checkout instead of a detached worktree.
+        #[arg(long)]
+        in_place: bool,
+        #[arg(long)]
+        model: Option<String>,
+        /// Seconds before the agent is stopped; capped at 7200.
+        #[arg(long, default_value_t = 1800)]
+        deadline: u64,
+    },
+    /// Every agent: status, tool calls, cost, latest activity.
+    Ls,
+    /// The table, redrawn every 2 s until no agent is running.
+    Watch,
+    /// One agent in full, with the command to take it over interactively.
+    Show { id: String },
+    /// Its activity, one line per tool call or message.
+    Tail {
+        id: String,
+        /// Keep following until it ends.
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Stop an agent and its whole process group.
+    Kill { id: String },
+    /// Remove finished agents' directories and worktrees. Refuses one whose
+    /// worktree holds work, unless --force.
+    Clean {
+        id: Option<String>,
+        #[arg(long)]
+        force: bool,
+    },
+    #[command(hide = true)]
+    Supervise { id: String },
 }
 
 fn main() -> Result<()> {
@@ -113,6 +177,142 @@ fn main() -> Result<()> {
             public_host,
         } => runtime()?.block_on(mcp::http(cfg, addr, token, public_host.clone())),
         Cmd::Tunnel { port } => runtime()?.block_on(cos::tunnel::run(cfg, *port)),
+        Cmd::Agents { cmd } => agents_cmd(&cli, cmd),
+    }
+}
+
+fn agents_cmd(cli: &Cli, cmd: &AgentCmd) -> Result<()> {
+    let home = &cli.home;
+    match cmd {
+        AgentCmd::Spawn {
+            from,
+            item,
+            all,
+            prompt,
+            harness,
+            repo,
+            in_place,
+            model,
+            deadline,
+        } => {
+            let picked: Vec<agents::Task> = match (from, prompt) {
+                (Some(from), _) => {
+                    let tasks = agents::tasks(home, *from)?;
+                    match item {
+                        _ if *all => tasks,
+                        Some(n) => vec![
+                            tasks
+                                .into_iter()
+                                .find(|t| t.n == *n)
+                                .with_context(|| format!("item {n} has no agent prompt"))?,
+                        ],
+                        None => {
+                            for t in &tasks {
+                                println!("{:>2}  {}", t.n, t.title);
+                            }
+                            anyhow::bail!("pick one with --item <n>, or --all");
+                        }
+                    }
+                }
+                (None, Some(p)) => vec![agents::Task {
+                    n: 0,
+                    title: p.lines().next().unwrap_or("").chars().take(80).collect(),
+                    prompt: p.clone(),
+                    source: "prompt".into(),
+                }],
+                (None, None) => anyhow::bail!("give --from brief|review or --prompt"),
+            };
+            let cos = std::env::current_exe().context("locate the cos binary")?;
+            for t in picked {
+                let repo = repo
+                    .clone()
+                    .or_else(|| agents::infer_repo(&t.prompt, &cli.projects));
+                let spec = agents::spawn(
+                    home,
+                    agents::Request {
+                        harness: *harness,
+                        program: None,
+                        model: model.clone(),
+                        worktree: !in_place,
+                        repo,
+                        title: t.title,
+                        source: t.source,
+                        prompt: t.prompt,
+                        deadline: Duration::from_secs(*deadline),
+                        budget_usd: cli.budget.unwrap_or(5.0),
+                    },
+                    &cos,
+                )?;
+                println!("{}  {}  {}", spec.id, spec.workdir.display(), spec.title);
+            }
+            eprintln!("watch: cos agents watch   ·   live page: cos dash → /agents");
+            Ok(())
+        }
+        AgentCmd::Ls => {
+            print!("{}", agents::view::table(&agents::list(home)?));
+            Ok(())
+        }
+        AgentCmd::Watch => loop {
+            let list = agents::list(home)?;
+            print!("\x1b[2J\x1b[H{}", agents::view::table(&list));
+            if list.iter().all(|(_, s)| s.status.terminal()) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        },
+        AgentCmd::Show { id } => {
+            let (spec, state) = agents::read(home, id)?;
+            print!("{}", agents::view::show(&spec, &state));
+            Ok(())
+        }
+        AgentCmd::Tail { id, follow } => {
+            let (spec, _) = agents::read(home, id)?;
+            let events = agents::events_path(home, id);
+            let mut at = 0;
+            loop {
+                let (lines, next) = agents::view::activity(&events, spec.harness, at);
+                for l in lines {
+                    println!("{l}");
+                }
+                at = next;
+                let (_, state) = agents::read(home, id)?;
+                if !follow || state.status.terminal() {
+                    if *follow {
+                        println!("— {}", state.status);
+                    }
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+        AgentCmd::Kill { id } => {
+            let state = agents::stop(home, id, Duration::from_secs(10))?;
+            println!("{id} {}", state.status);
+            Ok(())
+        }
+        AgentCmd::Clean { id, force } => {
+            let ids: Vec<String> = match id {
+                Some(id) => vec![id.clone()],
+                None => agents::list(home)?
+                    .into_iter()
+                    .filter(|(_, s)| s.status.terminal())
+                    .map(|(spec, _)| spec.id)
+                    .collect(),
+            };
+            let mut refused = 0;
+            for id in ids {
+                match agents::clean(home, &id, *force) {
+                    Ok(()) => println!("removed {id}"),
+                    Err(e) => {
+                        refused += 1;
+                        eprintln!("kept {id}: {e:#}");
+                    }
+                }
+            }
+            anyhow::ensure!(refused == 0, "{refused} agent(s) kept");
+            Ok(())
+        }
+        AgentCmd::Supervise { id } => agents::supervise(home, id),
     }
 }
 

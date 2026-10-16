@@ -1,4 +1,6 @@
+pub mod agents;
 pub mod claude;
+pub mod context;
 pub mod dash;
 pub mod gather;
 pub mod history;
@@ -11,11 +13,8 @@ pub mod store;
 pub mod tunnel;
 
 /// Read-only surface. With `--permission-mode dontAsk`, any tool not listed is
-/// denied — sending mail, editing Jira, writing files included.
+/// denied — sending mail, editing Jira, reading or writing files included.
 pub const READ_ONLY: &[&str] = &[
-    "Read",
-    "Glob",
-    "Grep",
     "ToolSearch",
     "mcp__claude_ai_Google_Calendar__list_events",
     "mcp__claude_ai_Google_Calendar__get_event",

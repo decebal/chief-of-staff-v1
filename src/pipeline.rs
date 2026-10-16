@@ -56,6 +56,11 @@ fn facts_block(facts: &Facts) -> String {
     )
 }
 
+/// Everything a brain reads that is not a connector: `context/`, then facts.
+fn grounding(home: &std::path::Path, facts: &Facts) -> String {
+    format!("{}\n\n{}", crate::context::block(home), facts_block(facts))
+}
+
 impl Config {
     /// Collects local facts once and keeps them, so the report charts the same
     /// numbers the brain was shown.
@@ -73,11 +78,11 @@ impl Config {
              ended go nowhere but a one-line note; prep only for what is still ahead.\n\n{}",
             d.day,
             d.now,
-            facts_block(facts)
+            grounding(&self.home, facts)
         );
         Run {
             json_schema: Some(reports::brief_schema()),
-            ..brain("tactician", "sonnet", prompt, self.budget.unwrap_or(2.0))
+            ..self.brain("tactician", "sonnet", prompt, self.budget.unwrap_or(2.0))
         }
     }
 
@@ -86,11 +91,11 @@ impl Config {
         let prompt = format!(
             "Today is {}. Run the weekly review against context/goals.md.\n\n{}",
             d.day,
-            facts_block(facts)
+            grounding(&self.home, facts)
         );
         Run {
             json_schema: Some(reports::review_schema()),
-            ..brain("strategist", "opus", prompt, self.budget.unwrap_or(5.0))
+            ..self.brain("strategist", "opus", prompt, self.budget.unwrap_or(5.0))
         }
     }
 
@@ -151,7 +156,7 @@ impl Config {
             "Today is {}. {}\n\nOriginal question: {question}\n\n{}",
             d.day,
             route.framing,
-            facts_block(&gather::collect(&self.projects, &d.week_ago))
+            grounding(&self.home, &gather::collect(&self.projects, &d.week_ago))
         );
         let budget = self.budget.unwrap_or(2.0);
         let answers: Vec<(&str, Result<Outcome>)> = thread::scope(|s| {
@@ -161,7 +166,7 @@ impl Config {
                 .map(|b| {
                     let run = Run {
                         deadline: left(),
-                        ..brain(b.agent(), b.model(), prompt.clone(), budget)
+                        ..self.brain(b.agent(), b.model(), prompt.clone(), budget)
                     };
                     let (home, audit) = (&self.home, &audit);
                     (
@@ -223,17 +228,24 @@ impl Config {
             serde_json::from_value(value).context("structured_output did not match the schema")?;
         Ok((parsed, out.total_cost_usd))
     }
-}
 
-fn brain(agent: &'static str, model: &'static str, prompt: String, budget: f64) -> Run<'static> {
-    Run {
-        agent,
-        model,
-        prompt,
-        json_schema: None,
-        max_budget_usd: budget,
-        tools: Toolset::Brain(READ_ONLY),
-        deadline: Duration::from_secs(300),
+    fn brain(
+        &self,
+        agent: &'static str,
+        model: &'static str,
+        prompt: String,
+        budget: f64,
+    ) -> Run<'static> {
+        Run {
+            agent,
+            model,
+            prompt,
+            json_schema: None,
+            max_budget_usd: budget,
+            tools: Toolset::Brain(READ_ONLY),
+            deadline: Duration::from_secs(300),
+            denied: crate::context::denied_servers(&self.home),
+        }
     }
 }
 
@@ -247,5 +259,6 @@ fn bare(prompt: String) -> Run<'static> {
         max_budget_usd: 0.5,
         tools: Toolset::None,
         deadline: Duration::from_secs(120),
+        denied: Vec::new(),
     }
 }

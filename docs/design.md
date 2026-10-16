@@ -54,16 +54,27 @@ one-word reply (Sonnet):
 | `--setting-sources project`, unused servers denied, ToolSearch kept | 42,465 | $0.17 |
 
 `cos` uses the last for brains and `--tools "" --strict-mcp-config` for route
-and merge. Live runs: `cos brief` $0.32 / 9 turns; `cos ask` (both brains)
-$1.45 including the route step. Every run carries `--max-budget-usd`.
+and merge. Which servers are "unused" is per person, so the deny list is data:
+`context/deny-mcp.txt`, seeded empty from `templates/context/`. Live runs:
+`cos brief` $0.32 / 9 turns; `cos ask` (both brains) $1.45 including the route
+step. Every run carries `--max-budget-usd`.
 
 ## Safety
 
 - Read-only: `--permission-mode dontAsk` plus an explicit allowlist
   (`READ_ONLY` in `src/lib.rs`). Send, draft, trash, Jira edits and file
   writes are denied, not merely discouraged.
+- No file tools. A brain's only built-in tool is `ToolSearch`
+  (`BRAIN_TOOLS` in `src/claude.rs`); `context/` is inlined into the prompt
+  by `src/context.rs`, capped at 64 KiB, newest decision first. A brain reads
+  mail and tickets other people wrote, and a brain that can `Read` any path
+  can be told by one of them to quote `~/.ssh` into a brief that `cos tunnel`
+  then serves. The agent prompts also treat instructions found in that data
+  as suspicious items, never as instructions. `tests/safety.rs` pins both.
 - Every child runs in its own process group under one deadline (≤ 300 s);
-  on expiry the group is killed and reaped (`src/proc.rs`).
+  on expiry the group is killed and reaped (`src/proc.rs`). A pipe still
+  open 2 s after its child exited belongs to a leftover in the group, which
+  is killed, so a grandchild cannot hold a run open past its deadline.
 - `out/` and `context/` are gitignored: briefs quote mail and calendar, and
   context holds personal goals.
 
@@ -102,6 +113,33 @@ and the server log shows Desktop fetched `ui://cos/dashboard`
 Not verified: Claude Dashboards over the remote server. Codex Spaces hold
 pages, sites and images; MCP servers do not appear there, and no documented
 way to populate a Space from a server was found.
+
+## Agents: from prompt to running work
+
+A brief hands out one `agent_prompt` per must-do and a review one per bet.
+`cos agents spawn --from brief --item 2` runs it instead of leaving it to be
+pasted (`src/agents/`).
+
+| Piece | Where | Does |
+|---|---|---|
+| spawn | `agents::spawn` | cuts a detached worktree from the repo the prompt names (`~/Projects/<repo>`), writes `spec.json`, starts the supervisor in its own session |
+| supervisor | `agents::supervise` (`cos agents supervise <id>`, hidden) | owns the harness for its whole life: own process group, one deadline (default 1800 s, ceiling 7200 s), streams `events.jsonl`, rewrites `state.json`, kills the group and reaps on exit, stop or deadline |
+| harness | `agents::harness` | Claude Code `-p --output-format stream-json`, `acceptEdits`, `--permission-prompts none`, Seatbelt sandbox with a strict network allowlist and no unsandboxed retry, `--max-budget-usd`; Codex `exec --json --sandbox workspace-write` |
+| monitor | `cos agents ls / watch / show / tail -f`, `cos dash` → `/agents`, MCP `agents` | status, tool calls, cost or tokens, latest activity, the session id to take over with |
+| stop | `cos agents kill`, MCP `stop_agent` | a `stop` file the supervisor polls every 250 ms; a supervisor that does not answer in 10 s is SIGKILLed and its harness group with it |
+| reconcile | every read | a running state whose supervisor is gone becomes `lost`, and its harness group is killed, but only if the group leader's recorded start time still matches, so a recycled pid is never signalled |
+| clean | `cos agents clean` | removes finished worktrees; refuses one with uncommitted changes or commits past its base unless `--force` |
+
+The agents are the one place `cos` writes outside `out/`: in their own
+worktree. Shell commands get no network in either harness, so a push, a PR
+comment or a mail is refused by the sandbox, not by the prompt's request to
+stop. Agents run past the 5-minute command ceiling by design; they are
+background work with their own deadline and spend cap, and no CLI call waits
+on one. Codex has no spend flag, so its cap is the deadline alone.
+
+`tests/agents.rs` drives the real supervisor binary against stand-in
+harnesses (`tests/fixtures/`): done, failed, killed, timed out, lost, and
+clean refusing work.
 
 ## Not built
 
